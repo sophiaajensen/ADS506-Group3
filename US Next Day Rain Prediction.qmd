@@ -1,0 +1,116 @@
+---
+title: "US Rain Predictions"
+format: pdf
+editor: visual
+---
+
+## Load Libraries and Data
+
+```{r setup}
+#| message: false
+#| warning: false
+library(readr)
+library(tidyverse)
+library(fpp3)
+library(slider)
+library(gt)
+library(knitr)
+library(fable)
+library(tsibble)
+library(dplyr)
+library(GGally)
+library(ggplot2)
+library(dplyr)
+```
+
+```{r}
+url <- "https://raw.githubusercontent.com/sophiaajensen/ADS506-Group3/main/usa_rain_prediction_dataset_2024_2025.csv"
+
+# Read the CSV file from the URL
+rain_data <- read_csv(url)
+
+# Replace spaces with underscores in column names
+colnames(rain_data) <- gsub(" ", "_", colnames(rain_data))
+
+# Check the updated column names
+colnames(rain_data)
+
+# Display the first few rows of the dataset
+head(rain_data)
+```
+
+## Exploring data structure and 
+```{r}
+summary(rain_data)
+
+```
+
+
+## Pairwise plot
+
+```{r}
+# Convert Date column to Date type and make it the index
+US_rain_pplot <- rain_data |>
+  mutate(Date = dmy(as.character(Date))) |>
+  as_tibble() |>
+  mutate(Rain_Tomorrow = factor(Rain_Tomorrow, levels = c(0, 1), labels = c("No Rain", "Rain")))
+
+# Create the pairwise plot with custom color for the 'Rain_Tomorrow' variable
+ggpairs(US_rain_pplot,
+        columns = 3:8,  # column temperature, huminity, windspeed
+        aes(color = Rain_Tomorrow, alpha = 0.7))
+```
+```{r}
+# Create binary column and temporal variables
+US_rain <- rain_data |>  
+  mutate(
+    month = format(Date, format = "%m"),  
+    year = format(Date, "%Y")             
+  )  
+
+# Compute overall average per month
+average.rain <- US_rain |>  
+  group_by(month, year) |>  
+  summarise(pct.Rain_Tomorrow = mean(Rain_Tomorrow, na.rm = TRUE) * 100) |>  # Calculate percent of rainy days per month
+  group_by(month) |>  
+  summarise(avg.Rain_Tomorrow = mean(pct.Rain_Tomorrow, na.rm = TRUE))  # Overall average per month
+
+# Plot
+US_rain |>  
+  group_by(month, year) |>  
+  summarise(pct.Rain_Tomorrow = mean(Rain_Tomorrow, na.rm = TRUE) * 100, .groups = 'drop') |>  # Fix the summarization
+  ggplot(aes(x = month, y = pct.Rain_Tomorrow, group = year, color = year)) +  
+  geom_line() +  
+  geom_line(data = average.rain, aes(y = avg.Rain_Tomorrow, x = month), 
+            colour = "black", group = 1, linetype = "dashed", size = 1.2) +  
+  xlab("Month") + 
+  ylab("Percent of rainy days per month")
+
+```
+```{r}
+# Create binary column and temporal variables, including week number and year
+US_rain <- US_rain |>  
+  mutate(
+    week = week(Date),  # Extract week number from Date
+    year = format(Date, "%Y")  # Extract year from Date
+  )  
+
+# Compute overall average per week
+average.rain <- US_rain |>  
+  group_by(week, year) |>  
+  summarise(pct.Rain_Tomorrow = mean(Rain_Tomorrow, na.rm = TRUE) * 100) |>  # Calculate percent of rainy days per week
+  group_by(week) |>  
+  summarise(avg.Rain_Tomorrow = mean(pct.Rain_Tomorrow, na.rm = TRUE))  # Overall average per week
+
+# Plot
+US_rain |>  
+  group_by(week, year) |>  
+  summarise(pct.Rain_Tomorrow = mean(Rain_Tomorrow, na.rm = TRUE) * 100, .groups = 'drop') |>  # Fix the summarization
+  ggplot(aes(x = week, y = pct.Rain_Tomorrow, group = year, color = year)) +  
+  geom_line() +  
+  geom_line(data = average.rain, aes(y = avg.Rain_Tomorrow, x = week), 
+            colour = "black", group = 1, linetype = "dashed", size = 1.2) +  
+  xlab("Week Number") + 
+  ylab("Percent of rainy days per week")
+```
+
