@@ -21,6 +21,9 @@ library(dplyr)
 library(GGally)
 library(ggplot2)
 library(dplyr)
+library(caret)
+library(zoo)
+library(urca)
 ```
 
 ```{r}
@@ -154,7 +157,6 @@ summary(lr_model)
 ```
 
 ```{r}
-library(caret)
 #| warning: false
 # Make predictions on the validation set
 pred_valid <- predict(lr_model, newdata = valid, type = "response")
@@ -165,7 +167,6 @@ pred_class <- ifelse(pred_valid > 0.5, 1, 0)
 # Confusion matrix 
 confusionMatrix(factor(pred_class), factor(valid$Rain_Tomorrow), positive = "1")
 ```
-
 ### Logistic Regression with no Lagged Variables 
 
 ```{r}
@@ -191,7 +192,6 @@ pred_class2 <- ifelse(pred_valid2 > 0.5, 1, 0)
 confusionMatrix(factor(pred_class2), factor(valid$Rain_Tomorrow), positive = "1")
 
 ```
-
 ```{r}
 library(pROC)
 # Compute ROC curve
@@ -202,5 +202,63 @@ plot(roc_curve, main = "ROC Curve for Logistic Regression Model", col = "blue", 
 
 # Print AUC value
 print(paste("AUC = ", round(auc(roc_curve), 3)))
+```
+### ARIMA Model
+
+```{r}
+# Ensure target is numeric (0 for "No Rain", 1 for "Yes Rain")
+rain_data_lags <- rain_data_lags |> 
+  mutate(Rain_Tomorrow = as.numeric(as.character(Rain_Tomorrow)))
+
+# Calculate rolling proportions
+rain_data_lags <- rain_data_lags |> 
+  mutate(rolling_rain_proportion = rollmean(Rain_Tomorrow, k = 7, fill = NA, align = "right"))  # 7-day rolling window
+
+# Remove rows with NA values after the rolling mean calculation
+rain_data_lags <- rain_data_lags |> 
+  filter(!is.na(rolling_rain_proportion))
+
+# Check the result
+head(rain_data_lags |> select(Date, Rain_Tomorrow, rolling_rain_proportion))
+
+```
+
+```{r}
+# Partition the data into training and validation periods
+train <- rain_data_lags |> 
+    filter(Date >= "2024-01-02" & Date <= "2024-12-31") 
+
+valid <- rain_data_lags |> 
+    filter(Date > "2024-12-31" & Date <= "2025-01-30")
+
+# Ensure the data is a tsibble
+rain_data_lags <- rain_data_lags |> 
+  distinct(Date, .keep_all = TRUE) |> 
+  as_tsibble(index = Date) |> fill_gaps()
+
+# Unit root test 
+train |> features(rolling_rain_proportion, unitroot_kpss)
+train |>
+    autoplot(rolling_rain_proportion)
+
+# Fit an ARIMA model
+arima_model <- train |> 
+  model(ARIMA(rolling_rain_proportion))
+
+# Summarize the fitted model
+report(arima_model)
+
+# Forecast for the next 30 days
+arima_forecast <- arima_model |> 
+  forecast(h = "30 days")
+
+# Plot the forecast
+arima_forecast |> 
+  autoplot(valid) +
+  labs(title = "ARIMA Forecast of Rain Proportions",
+       y = "Proportion of Rainy Days",
+       x = "Date") +
+  theme_minimal()
+
 ```
 
