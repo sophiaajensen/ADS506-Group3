@@ -1,0 +1,284 @@
+---
+title: "US Rain Predictions"
+format: pdf
+editor: visual
+execute: 
+  cache: true
+---
+
+## Load Libraries and Data
+
+```{r setup}
+#| message: false
+#| warning: false
+library(readr)
+library(tidyverse)
+library(fpp3)
+library(slider)
+library(gt)
+library(knitr)
+library(fable)
+library(tsibble)
+library(dplyr)
+library(GGally)
+library(ggplot2)
+library(dplyr)
+library(caret)
+library(zoo)
+library(urca)
+```
+
+```{r}
+url <- "https://raw.githubusercontent.com/sophiaajensen/ADS506-Group3/main/usa_rain_prediction_dataset_2024_2025.csv"
+
+# Read the CSV file from the URL
+rain_data <- read_csv(url)
+
+# Replace spaces with underscores in column names
+colnames(rain_data) <- gsub(" ", "_", colnames(rain_data))
+
+# Check the updated column names
+colnames(rain_data)
+
+# Display the first few rows of the dataset
+head(rain_data)
+```
+
+## Exploring data structure and
+
+```{r}
+summary(rain_data)
+
+```
+
+## Pairwise plot
+
+```{r}
+# | cache: true
+# Convert Date column to Date type and make it the index
+US_rain_pplot <- rain_data |>
+  mutate(Date = dmy(as.character(Date))) |>
+  as_tibble() |>
+  mutate(Rain_Tomorrow = factor(Rain_Tomorrow, levels = c(0, 1), labels = c("No Rain", "Rain")))
+
+# Create the pairwise plot with custom color for the 'Rain_Tomorrow' variable
+ggpairs(US_rain_pplot,
+        columns = 3:8,  # column temperature, huminity, windspeed
+        aes(color = Rain_Tomorrow, alpha = 0.7))
+```
+
+```{r}
+#| cache: true
+#| warning: false
+# Create binary column and temporal variables
+US_rain <- rain_data |>  
+  mutate(
+    month = format(Date, format = "%m"),  
+    year = format(Date, "%Y")             
+  )  
+
+# Compute overall average per month
+average.rain <- US_rain |>  
+  group_by(month, year) |>  
+  summarise(pct.Rain_Tomorrow = mean(Rain_Tomorrow, na.rm = TRUE) * 100) |>  # Calculate percent of rainy days per month
+  group_by(month) |>  
+  summarise(avg.Rain_Tomorrow = mean(pct.Rain_Tomorrow, na.rm = TRUE))  # Overall average per month
+
+# Plot
+US_rain |>  
+  group_by(month, year) |>  
+  summarise(pct.Rain_Tomorrow = mean(Rain_Tomorrow, na.rm = TRUE) * 100, .groups = 'drop') |>  # Fix the summarization
+  ggplot(aes(x = month, y = pct.Rain_Tomorrow, group = year, color = year)) +  
+  geom_line() +  
+  geom_line(data = average.rain, aes(y = avg.Rain_Tomorrow, x = month), 
+            colour = "black", group = 1, linetype = "dashed", size = 1.2) +  
+  xlab("Month") + 
+  ylab("Percent of rainy days per month")
+
+```
+
+```{r}
+#| warning: false
+#| cache: true
+# Create binary column and temporal variables, including week number and year
+US_rain <- US_rain |>  
+  mutate(
+    week = week(Date),  # Extract week number from Date
+    year = format(Date, "%Y")  # Extract year from Date
+  )  
+
+# Compute overall average per week
+average.rain <- US_rain |>  
+  group_by(week, year) |>  
+  summarise(pct.Rain_Tomorrow = mean(Rain_Tomorrow, na.rm = TRUE) * 100) |>  # Calculate percent of rainy days per week
+  group_by(week) |>  
+  summarise(avg.Rain_Tomorrow = mean(pct.Rain_Tomorrow, na.rm = TRUE))  # Overall average per week
+
+# Plot
+US_rain |>  
+  group_by(week, year) |>  
+  summarise(pct.Rain_Tomorrow = mean(Rain_Tomorrow, na.rm = TRUE) * 100, .groups = 'drop') |>  # Fix the summarization
+  ggplot(aes(x = week, y = pct.Rain_Tomorrow, group = year, color = year)) +  
+  geom_line() +  
+  geom_line(data = average.rain, aes(y = avg.Rain_Tomorrow, x = week), 
+            colour = "black", group = 1, linetype = "dashed", size = 1.2) +  
+  xlab("Week Number") + 
+  ylab("Percent of rainy days per week")
+```
+
+## Models & Evaluation
+
+### Logistic Regression with Lagged Variables
+
+```{r}
+# Add lagged features for prediction
+rain_data_lags <- rain_data |> 
+  mutate(lag_precipitation = lag(Precipitation, 1),  # Precipitation from the previous day
+         lag_humidity = lag(Humidity, 1), #Hunmidity from the previous day
+         lag_temperature = lag(Temperature, 1), 
+         lag_CloudCover = lag(Cloud_Cover, 1),
+         lag_windspeed = lag(Wind_Speed, 1),
+         lag_pressure = lag(Pressure, 1)) |> 
+  filter(!is.na(lag_precipitation), !is.na(lag_humidity), !is.na(lag_temperature), 
+         !is.na(lag_CloudCover), !is.na(lag_windspeed), !is.na(lag_pressure))  # Remove NA values
+
+# Partition the data into training and validation periods
+train <- rain_data_lags |> 
+    filter(Date >= "2024-01-02" & Date <= "2024-12-31") 
+valid <- rain_data_lags |> 
+    filter(Date <= "2025-01-01")
+
+# Ensure that Rain_Tomorrow is binary (0 or 1) for logistic regression
+rain_data_lags$Rain_Tomorrow <- as.factor(rain_data_lags$Rain_Tomorrow)
+
+# Fit logistic regression to training data 
+lr_model <- glm(Rain_Tomorrow ~ lag_temperature + 
+                  lag_CloudCover + 
+                  lag_precipitation + 
+                  lag_humidity + lag_windspeed + lag_pressure, 
+                family = binomial, 
+                data = train)
+
+# View model summary
+summary(lr_model)
+```
+
+```{r}
+#| warning: false
+# Make predictions on the validation set
+pred_valid <- predict(lr_model, newdata = valid, type = "response")
+
+# Convert probabilities to binary predictions (using a threshold of 0.5)
+pred_class <- ifelse(pred_valid > 0.5, 1, 0)
+
+# Confusion matrix 
+confusionMatrix(factor(pred_class), factor(valid$Rain_Tomorrow), positive = "1")
+```
+### Logistic Regression with no Lagged Variables 
+
+```{r}
+# Fit logistic regression to training data 
+lr_model2 <- glm(Rain_Tomorrow ~ Temperature + 
+                  Cloud_Cover + 
+                  Precipitation + 
+                   Humidity + Pressure + Wind_Speed, 
+                family = binomial, 
+                data = train)
+
+# View model summary
+summary(lr_model2)
+
+#| warning: false
+# Make predictions on the validation set
+pred_valid2 <- predict(lr_model2, newdata = valid, type = "response")
+
+# Convert probabilities to binary predictions (using a threshold of 0.5)
+pred_class2 <- ifelse(pred_valid2 > 0.5, 1, 0)
+
+# Confusion matrix 
+confusionMatrix(factor(pred_class2), factor(valid$Rain_Tomorrow), positive = "1")
+
+```
+```{r}
+library(pROC)
+# Compute ROC curve
+roc_curve <- roc(valid$Rain_Tomorrow, as.numeric(pred_class2))
+
+# Plot ROC curve
+plot(roc_curve, main = "ROC Curve for Logistic Regression Model", col = "blue", lwd = 2)
+
+# Print AUC value
+print(paste("AUC = ", round(auc(roc_curve), 3)))
+```
+### ARIMA Model
+
+```{r}
+# Ensure target is numeric (0 for "No Rain", 1 for "Yes Rain")
+rain_data_lags <- rain_data_lags |> 
+  mutate(Rain_Tomorrow = as.numeric(as.character(Rain_Tomorrow)))
+
+# Calculate rolling proportions
+rain_data_lags <- rain_data_lags |> 
+  mutate(rolling_rain_proportion = rollmean(Rain_Tomorrow, k = 7, fill = NA, align = "right"))  # 7-day rolling window
+
+# Remove rows with NA values after the rolling mean calculation
+rain_data_lags <- rain_data_lags |> 
+  filter(!is.na(rolling_rain_proportion))
+
+# Check the result
+head(rain_data_lags |> select(Date, Rain_Tomorrow, rolling_rain_proportion))
+
+```
+
+```{r}
+# Partition the data into training and validation periods
+train <- rain_data_lags |> 
+    filter(Date >= "2024-01-02" & Date <= "2024-12-31") |> 
+  distinct(Date, .keep_all = TRUE) |> 
+  as_tsibble(index = Date) |> fill_gaps()
+
+valid <- rain_data_lags |> 
+    filter(Date > "2024-12-31" & Date <= "2025-01-30") |> 
+  distinct(Date, .keep_all = TRUE) |> 
+  as_tsibble(index = Date) |> fill_gaps()
+
+# Ensure the data is a tsibble
+rain_data_lags <- rain_data_lags |> 
+  distinct(Date, .keep_all = TRUE) |> 
+  as_tsibble(index = Date) |> fill_gaps()
+
+# Unit root test 
+train |> features(rolling_rain_proportion, unitroot_kpss)
+train |>
+    autoplot(rolling_rain_proportion)
+
+# Fit an ARIMA model
+arima_model <- train |> 
+  model(ARIMA(rolling_rain_proportion))
+
+# Summarize the fitted model
+report(arima_model)
+
+# Forecast for the next 30 days
+arima_forecast <- arima_model |> 
+  forecast(h = "30 days")
+
+# Plot the forecast
+arima_forecast |> 
+  autoplot(valid) +
+  labs(title = "ARIMA Forecast of Rain Proportions",
+       y = "Proportion of Rainy Days",
+       x = "Date") +
+  theme_minimal()
+
+```
+```{r}
+# | warning: false
+# Get accuracy from forecast
+accuracy_arima <- arima_forecast |> 
+  accuracy(valid) |> 
+  select(Model = .model, RMSE) 
+
+kable(accuracy_arima)
+```
+
